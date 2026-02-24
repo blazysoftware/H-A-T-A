@@ -1,0 +1,294 @@
+//+------------------------------------------------------------------+
+//|                                     Betha_Pro_MTF_FullSetup.mq5  |
+//|                                     Fluxo + Exaustão + Bollinger |
+//+------------------------------------------------------------------+
+#property indicator_chart_window
+#property indicator_buffers 9 
+#property indicator_plots   7 
+
+// --- CONFIGURAÇÃO VISUAL DAS BANDAS ---
+#property indicator_label1  "Upper Band"
+#property indicator_type1   DRAW_LINE
+#property indicator_style1  STYLE_SOLID
+#property indicator_width1  1
+#property indicator_color1  clrDimGray 
+
+#property indicator_label2  "Lower Band"
+#property indicator_type2   DRAW_LINE
+#property indicator_style2  STYLE_SOLID
+#property indicator_width2  1
+#property indicator_color2  clrDimGray 
+
+#property indicator_label3  "Middle Band (MA)"
+#property indicator_type3   DRAW_LINE
+#property indicator_style3  STYLE_SOLID
+#property indicator_width3  1
+#property indicator_color3  clrDimGray 
+
+// --- CONFIGURAÇÃO VISUAL DA MÉDIA 60 ---
+#property indicator_label4  "SMA 60"
+#property indicator_type4   DRAW_LINE
+#property indicator_style4  STYLE_SOLID
+#property indicator_width4  2
+#property indicator_color4  clrYellow
+
+// --- CONFIGURAÇÃO VISUAL DA MÉDIA 200 ---
+#property indicator_label5  "SMA 200"
+#property indicator_type5   DRAW_LINE
+#property indicator_style5  STYLE_SOLID
+#property indicator_width5  2
+#property indicator_color5  clrPurple
+
+// --- CONFIGURAÇÃO VISUAL DOS SINAIS DE ENTRADA (SETAS) ---
+#property indicator_label6  "Buy Signal"
+#property indicator_type6   DRAW_ARROW
+#property indicator_color6  clrDodgerBlue
+#property indicator_width6  2
+
+#property indicator_label7  "Sell Signal"
+#property indicator_type7   DRAW_ARROW
+#property indicator_color7  clrCrimson
+#property indicator_width7  2
+
+// Criação do Selectbox (Menu Suspenso)
+enum ENUM_SIM_NAO {
+   NAO = 0, // Não
+   SIM = 1  // Sim
+};
+
+input group "=== GATILHOS DE ENTRADA ==="
+input int InpSequenciaSinal = 3; // Quantidade de Máximas/Mínimas VERDADEIRAS para entrar
+
+input group "=== FILTRO DE TELA ==="
+input ENUM_SIM_NAO InpMostrarSomentePicos = NAO;     
+input ENUM_SIM_NAO InpOcultarDentroBandas = SIM; 
+
+input group "=== BOLLINGER BANDS (MAPA) ==="
+input int      InpBandsPeriod = 20;       
+input double   InpBandsDev    = 2.0;      
+input int      InpBandsShift  = 0;        
+
+input group "=== MÉDIAS MÓVEIS ADICIONAIS ==="
+input int      InpSMA60Period  = 60;       
+input color    InpSMA60Color   = clrYellow; 
+input int      InpSMA200Period = 200;      
+input color    InpSMA200Color  = clrPurple; 
+
+input group "=== CONFIGURAÇÕES GERAIS ==="
+input int InpBarsToAnalyze = 200; 
+input int InpDistanciaWick = 15;  
+
+input group "=== EXAUSTÃO DE FLUXO ==="
+input int   InpMAPeriod        = 10;            
+input int   InpExhaustionPct   = 50;            
+input color InpColorExhaust    = C'200,160,50'; 
+
+input group "=== PALETA DE CORES DO GRÁFICO ==="
+input color InpColorBackground = clrBlack;         
+input color InpColorCandleUp   = clrDarkGreen;     
+input color InpColorCandleDown = clrSilver;        
+
+input group "=== CORES DOS NÚMEROS (NORMAL) ==="
+input color InpColorLabelUp    = clrTeal;     
+input color InpColorLabelDown  = clrSilver;        
+
+input group "=== ALERTAS DE ABSORÇÃO (MÁXIMAS) ==="
+input int   InpMaxUpVolume     = 300;              
+input color InpColorMaxUp      = clrLime;          
+input int   InpMaxDownVolume   = 300;              
+input color InpColorMaxDown    = clrRed;           
+
+// Variáveis Globais
+int bandsHandle, sma60Handle, sma200Handle;
+
+// Buffers Visuais
+double UpperBuffer[], LowerBuffer[], MiddleBuffer[], SMA60Buffer[], SMA200Buffer[];
+double BuySignalBuffer[], SellSignalBuffer[];
+double CountBuyBuffer[], CountSellBuffer[];
+
+int OnInit() {
+   ChartSetInteger(0, CHART_SHOW_GRID, false);
+   ChartSetInteger(0, CHART_MODE, CHART_CANDLES);
+   
+   ChartSetInteger(0, CHART_COLOR_BACKGROUND, InpColorBackground);
+   ChartSetInteger(0, CHART_COLOR_CANDLE_BULL, InpColorCandleUp);
+   ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR, InpColorCandleDown);
+   ChartSetInteger(0, CHART_COLOR_CHART_UP, InpColorCandleUp);
+   ChartSetInteger(0, CHART_COLOR_CHART_DOWN, InpColorCandleDown);
+   ChartSetInteger(0, CHART_COLOR_FOREGROUND, clrLightGray); 
+   ChartSetInteger(0, CHART_COLOR_CHART_LINE, InpColorCandleDown); 
+
+   SetIndexBuffer(0, UpperBuffer, INDICATOR_DATA);    ArraySetAsSeries(UpperBuffer, true); 
+   SetIndexBuffer(1, LowerBuffer, INDICATOR_DATA);    ArraySetAsSeries(LowerBuffer, true); 
+   SetIndexBuffer(2, MiddleBuffer, INDICATOR_DATA);   ArraySetAsSeries(MiddleBuffer, true);
+   SetIndexBuffer(3, SMA60Buffer, INDICATOR_DATA);    ArraySetAsSeries(SMA60Buffer, true);
+   SetIndexBuffer(4, SMA200Buffer, INDICATOR_DATA);   ArraySetAsSeries(SMA200Buffer, true);
+
+   SetIndexBuffer(5, BuySignalBuffer, INDICATOR_DATA);
+   PlotIndexSetInteger(5, PLOT_ARROW, 233);
+   ArraySetAsSeries(BuySignalBuffer, true);
+
+   SetIndexBuffer(6, SellSignalBuffer, INDICATOR_DATA);
+   PlotIndexSetInteger(6, PLOT_ARROW, 234);
+   ArraySetAsSeries(SellSignalBuffer, true);
+
+   SetIndexBuffer(7, CountBuyBuffer, INDICATOR_CALCULATIONS);
+   ArraySetAsSeries(CountBuyBuffer, true);
+   SetIndexBuffer(8, CountSellBuffer, INDICATOR_CALCULATIONS);
+   ArraySetAsSeries(CountSellBuffer, true);
+
+   bandsHandle  = iBands(_Symbol, PERIOD_CURRENT, InpBandsPeriod, InpBandsShift, InpBandsDev, PRICE_CLOSE);
+   sma60Handle  = iMA(_Symbol, PERIOD_CURRENT, InpSMA60Period, 0, MODE_SMA, PRICE_CLOSE);
+   sma200Handle = iMA(_Symbol, PERIOD_CURRENT, InpSMA200Period, 0, MODE_SMA, PRICE_CLOSE);
+
+   return(INIT_SUCCEEDED);
+}
+
+void OnDeinit(const int reason) {
+   ObjectsDeleteAll(0, "TF_FP_");
+   Comment("");
+}
+
+int OnCalculate(const int rates_total, const int prev_calculated, const datetime &time[],
+                const double &open[], const double &high[], const double &low[],
+                const double &close[], const long &tick_volume[], const long &volume[],
+                const int &spread[]) 
+{
+   if(rates_total < InpBarsToAnalyze + 200) return 0; 
+
+   CopyBuffer(bandsHandle, 1, 0, rates_total, UpperBuffer);
+   CopyBuffer(bandsHandle, 2, 0, rates_total, LowerBuffer);
+   CopyBuffer(bandsHandle, 0, 0, rates_total, MiddleBuffer);
+   CopyBuffer(sma60Handle, 0, 0, rates_total, SMA60Buffer);
+   CopyBuffer(sma200Handle, 0, 0, rates_total, SMA200Buffer);
+   
+   int limit = InpBarsToAnalyze;
+   if(prev_calculated > 0) limit = 2; 
+   
+   for(int i = limit - 1; i >= 0; i--) {
+      bool isCurrent = (i == 0); 
+      
+      datetime barTime = iTime(_Symbol, PERIOD_CURRENT, i);
+      double barHigh   = iHigh(_Symbol, PERIOD_CURRENT, i);
+      double barLow    = iLow(_Symbol, PERIOD_CURRENT, i);
+      
+      long sumVol = 0;
+      for(int j = 1; j <= InpMAPeriod; j++) sumVol += iVolume(_Symbol, PERIOD_CURRENT, i + j);
+      double avgHalfVol = ((double)sumVol / InpMAPeriod) / 2.0;
+      
+      bool isRealMaxBuy = false;
+      bool isRealMaxSell = false;
+
+      // Chama o Footprint e pega a validação BLINDADA
+      DrawForexFootprint(i, barTime, barHigh, barLow, isCurrent, avgHalfVol, UpperBuffer[i], LowerBuffer[i], isRealMaxBuy, isRealMaxSell);
+
+      // Lê a contagem anterior
+      int prevCountB = (i + 1 < rates_total) ? (int)CountBuyBuffer[i+1] : 0;
+      int prevCountS = (i + 1 < rates_total) ? (int)CountSellBuffer[i+1] : 0;
+
+      // Se for Max Verde, soma. Se for Exaustão ou Normal, ZERA.
+      CountBuyBuffer[i]  = isRealMaxBuy  ? (prevCountB + 1) : 0;
+      CountSellBuffer[i] = isRealMaxSell ? (prevCountS + 1) : 0;
+
+      // --- PLOTA SINAL NA VELA ATUAL SE A ANTERIOR BATEU A META ---
+      if (prevCountB >= InpSequenciaSinal) {
+         BuySignalBuffer[i] = barLow - (InpDistanciaWick * 3 * _Point);
+         CountBuyBuffer[i] = 0; // Zera para não dar sinal infinito
+      } else {
+         BuySignalBuffer[i] = EMPTY_VALUE;
+      }
+
+      if (prevCountS >= InpSequenciaSinal) {
+         SellSignalBuffer[i] = barHigh + (InpDistanciaWick * 3 * _Point);
+         CountSellBuffer[i] = 0; // Zera
+      } else {
+         SellSignalBuffer[i] = EMPTY_VALUE;
+      }
+   }
+   
+   return(rates_total);
+}
+
+void DrawForexFootprint(int shift, datetime barTime, double high, double low, bool isCurrent, double avgHalfVol, double upBand, double loBand, bool &outIsMaxBuy, bool &outIsMaxSell) {
+   MqlTick ticks[];
+   ulong from_msc = (ulong)barTime * 1000;
+   ulong to_msc = from_msc + (PeriodSeconds(PERIOD_CURRENT) * 1000);
+   
+   int copied = CopyTicksRange(_Symbol, ticks, COPY_TICKS_INFO, from_msc, to_msc);
+   if(copied <= 0) return;
+
+   int buyTicks = 0, sellTicks = 0;
+   for(int t = 1; t < copied; t++) {
+      if(ticks[t].bid > ticks[t-1].bid) buyTicks++;        
+      else if(ticks[t].bid < ticks[t-1].bid) sellTicks++; 
+   }
+
+   string prefix = "TF_FP_" + (string)barTime;
+   double offset = InpDistanciaWick * _Point;
+
+   string buyText = (string)buyTicks;
+   string sellText = (string)sellTicks;
+   color finalBuyColor = InpColorLabelUp;
+   color finalSellColor = InpColorLabelDown;
+
+   double limitExh = avgHalfVol * (InpExhaustionPct / 100.0);
+   bool isExhB = (avgHalfVol > 0 && buyTicks < limitExh);
+   bool isExhS = (avgHalfVol > 0 && sellTicks < limitExh);
+
+   bool maxBuyConfirm = false;
+   bool maxSellConfirm = false;
+
+   // LÓGICA DE DEFINIÇÃO DE CORES E MAX (Blindada)
+   if(buyTicks >= InpMaxUpVolume && !isExhB) { 
+      finalBuyColor = InpColorMaxUp; // Fica Verde!
+      maxBuyConfirm = true;          // Confirma o Max!
+   } else if(isExhB) { 
+      finalBuyColor = InpColorExhaust; 
+      buyText += "*"; 
+   }
+
+   if(sellTicks >= InpMaxDownVolume && !isExhS) { 
+      finalSellColor = InpColorMaxDown; // Fica Vermelho!
+      maxSellConfirm = true;            // Confirma o Max!
+   } else if(isExhS) { 
+      finalSellColor = InpColorExhaust; 
+      sellText += "*"; 
+   }
+
+   // Filtro de Bandas
+   if(InpOcultarDentroBandas == SIM) {
+      if(high < upBand && high > loBand) { buyText = " "; maxBuyConfirm = false; }
+      if(low < upBand && low > loBand) { sellText = " "; maxSellConfirm = false; }
+   }
+
+   if(InpMostrarSomentePicos == SIM) {
+      if(!maxBuyConfirm && !isExhB) buyText = " ";
+      if(!maxSellConfirm && !isExhS) sellText = " ";
+   }
+
+   // Passa os valores estritos para o loop principal. 
+   // Se for amarelo ou azul, esses caras vão como FALSE garantido.
+   outIsMaxBuy  = maxBuyConfirm;
+   outIsMaxSell = maxSellConfirm;
+
+   // Desenho Textos
+   string lblB = prefix + "_Buy";
+   if(ObjectFind(0, lblB) < 0) ObjectCreate(0, lblB, OBJ_TEXT, 0, barTime, high + offset);
+   ObjectSetDouble(0, lblB, OBJPROP_PRICE, high + offset); 
+   ObjectSetString(0, lblB, OBJPROP_TEXT, buyText);
+   ObjectSetInteger(0, lblB, OBJPROP_COLOR, finalBuyColor); 
+   ObjectSetInteger(0, lblB, OBJPROP_FONTSIZE, 6);
+   ObjectSetInteger(0, lblB, OBJPROP_ANCHOR, ANCHOR_LOWER);
+
+   string lblS = prefix + "_Sell";
+   if(ObjectFind(0, lblS) < 0) ObjectCreate(0, lblS, OBJ_TEXT, 0, barTime, low - offset);
+   ObjectSetDouble(0, lblS, OBJPROP_PRICE, low - offset); 
+   ObjectSetString(0, lblS, OBJPROP_TEXT, sellText);
+   ObjectSetInteger(0, lblS, OBJPROP_COLOR, finalSellColor); 
+   ObjectSetInteger(0, lblS, OBJPROP_FONTSIZE, 6);
+   ObjectSetInteger(0, lblS, OBJPROP_ANCHOR, ANCHOR_UPPER);
+   
+   if(isCurrent) { 
+      Comment(" [" + EnumToString(_Period) + "] Sinal Estrito! Entra na próxima após ", InpSequenciaSinal, " Picos Coloridos"); 
+   }
+}
