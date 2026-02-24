@@ -1,1 +1,229 @@
 
+//+------------------------------------------------------------------+
+//|                                Betha_Pro_MTF_FullSetup.mq5       |
+//|                                Fluxo + Exaustão + Bollinger      |
+//+------------------------------------------------------------------+
+#property indicator_chart_window
+#property indicator_buffers 3 
+#property indicator_plots   3 
+
+// --- CONFIGURAÇÃO VISUAL DAS BANDAS (DISCRETAS E SÓLIDAS) ---
+#property indicator_label1  "Upper Band"
+#property indicator_type1   DRAW_LINE
+#property indicator_style1  STYLE_SOLID
+#property indicator_width1  1
+#property indicator_color1  clrDimGray // Cinza Discreto, mas visível
+
+#property indicator_label2  "Lower Band"
+#property indicator_type2   DRAW_LINE
+#property indicator_style2  STYLE_SOLID
+#property indicator_width2  1
+#property indicator_color2  clrDimGray 
+
+#property indicator_label3  "Middle Band (MA)"
+#property indicator_type3   DRAW_LINE
+#property indicator_style3  STYLE_SOLID
+#property indicator_width3  1
+#property indicator_color3  clrDimGray 
+
+// Criação do Selectbox (Menu Suspenso)
+enum ENUM_SIM_NAO {
+   NAO = 0, // Não
+   SIM = 1  // Sim
+};
+
+input group "=== TIMEFRAME ==="
+input ENUM_TIMEFRAMES InpTimeFrame = PERIOD_CURRENT; 
+
+input group "=== FILTRO DE TELA ==="
+input ENUM_SIM_NAO InpMostrarSomentePicos = SIM;     
+
+input group "=== BOLLINGER BANDS (MAPA) ==="
+input int      InpBandsPeriod = 20;       
+input double   InpBandsDev    = 2.0;      
+input int      InpBandsShift  = 0;        
+
+input group "=== CONFIGURAÇÕES GERAIS ==="
+input int InpBarsToAnalyze = 200; 
+input int InpDistanciaWick = 15;  
+
+input group "=== EXAUSTÃO DE FLUXO (MÉDIA MÓVEL) ==="
+input int   InpMAPeriod        = 10;            
+input int   InpExhaustionPct   = 50;            
+input color InpColorExhaust    = C'200,160,50'; 
+
+input group "=== PALETA DE CORES DO GRÁFICO ==="
+input color InpColorBackground = clrBlack;         
+input color InpColorCandleUp   = clrTeal;     
+input color InpColorCandleDown = clrSilver;        
+
+input group "=== CORES DOS NÚMEROS (NORMAL) ==="
+input color InpColorLabelUp    = clrTeal;     
+input color InpColorLabelDown  = clrSilver;        
+
+input group "=== ALERTAS DE ABSORÇÃO (MÁXIMAS) ==="
+input int   InpMaxUpVolume     = 3000;              
+input color InpColorMaxUp      = clrLime;          
+input int   InpMaxDownVolume   = 3000;              
+input color InpColorMaxDown    = clrRed;           
+
+// Variáveis Globais para as Bandas
+int bandsHandle;
+double UpperBuffer[], LowerBuffer[], MiddleBuffer[];
+
+int OnInit() {
+   ChartSetInteger(0, CHART_SHOW_GRID, false);
+   ChartSetInteger(0, CHART_MODE, CHART_CANDLES);
+   
+   ChartSetInteger(0, CHART_COLOR_BACKGROUND, InpColorBackground);
+   ChartSetInteger(0, CHART_COLOR_CANDLE_BULL, InpColorCandleUp);
+   ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR, InpColorCandleDown);
+   ChartSetInteger(0, CHART_COLOR_CHART_UP, InpColorCandleUp);
+   ChartSetInteger(0, CHART_COLOR_CHART_DOWN, InpColorCandleDown);
+   
+   ChartSetInteger(0, CHART_COLOR_FOREGROUND, clrLightGray); 
+   ChartSetInteger(0, CHART_COLOR_CHART_LINE, InpColorCandleDown); 
+
+   // A MÁGICA DA CORREÇÃO DAS BANDAS ESTÁ AQUI: ArraySetAsSeries
+   SetIndexBuffer(0, UpperBuffer, INDICATOR_DATA);
+   ArraySetAsSeries(UpperBuffer, true); // Força a ancorar na vela atual
+   
+   SetIndexBuffer(1, LowerBuffer, INDICATOR_DATA);
+   ArraySetAsSeries(LowerBuffer, true); 
+   
+   SetIndexBuffer(2, MiddleBuffer, INDICATOR_DATA);
+   ArraySetAsSeries(MiddleBuffer, true);
+
+   bandsHandle = iBands(_Symbol, InpTimeFrame, InpBandsPeriod, InpBandsShift, InpBandsDev, PRICE_CLOSE);
+   if(bandsHandle == INVALID_HANDLE) {
+      Print("Erro crítico: Não foi possível criar o indicador de Bandas.");
+      return(INIT_FAILED);
+   }
+
+   return(INIT_SUCCEEDED);
+}
+
+void OnDeinit(const int reason) {
+   ObjectsDeleteAll(0, "TF_FP_");
+   Comment("");
+   IndicatorRelease(bandsHandle); 
+}
+
+int OnCalculate(const int rates_total, const int prev_calculated, const datetime &time[],
+                const double &open[], const double &high[], const double &low[],
+                const double &close[], const long &tick_volume[], const long &volume[],
+                const int &spread[]) 
+{
+   int bars = iBars(_Symbol, InpTimeFrame);
+   if(bars < InpBarsToAnalyze + InpMAPeriod) return 0; 
+
+   // Copia os dados para os buffers que agora estão ancorados corretamente
+   int copiedU = CopyBuffer(bandsHandle, 1, 0, rates_total, UpperBuffer);
+   int copiedL = CopyBuffer(bandsHandle, 2, 0, rates_total, LowerBuffer);
+   int copiedM = CopyBuffer(bandsHandle, 0, 0, rates_total, MiddleBuffer);
+
+   if(copiedU <= 0 || copiedL <= 0 || copiedM <= 0) return 0; 
+   
+   // --- LOOP DO FOOTPRINT (FLUXO) ---
+   for(int i = 0; i < InpBarsToAnalyze; i++) {
+      bool isCurrent = (i == 0); 
+      
+      datetime barTime = iTime(_Symbol, InpTimeFrame, i);
+      double barHigh   = iHigh(_Symbol, InpTimeFrame, i);
+      double barLow    = iLow(_Symbol, InpTimeFrame, i);
+      
+      long sumVol = 0;
+      for(int j = 1; j <= InpMAPeriod; j++) {
+         sumVol += iVolume(_Symbol, InpTimeFrame, i + j);
+      }
+      double avgHalfVol = ((double)sumVol / InpMAPeriod) / 2.0;
+      
+      DrawForexFootprint(i, barTime, barHigh, barLow, isCurrent, avgHalfVol);
+   }
+   
+   return(rates_total);
+}
+
+void DrawForexFootprint(int shift, datetime barTime, double high, double low, bool isCurrent, double avgHalfVol) {
+   MqlTick ticks[];
+   ulong from_msc = (ulong)barTime * 1000;
+   ulong to_msc = from_msc + (PeriodSeconds(InpTimeFrame) * 1000);
+   
+   int copied = CopyTicksRange(_Symbol, ticks, COPY_TICKS_INFO, from_msc, to_msc);
+   if(copied <= 0) return;
+
+   int buyTicks = 0;
+   int sellTicks = 0;
+
+   for(int t = 1; t < copied; t++) {
+      if(ticks[t].bid > ticks[t-1].bid) buyTicks++;       
+      else if(ticks[t].bid < ticks[t-1].bid) sellTicks++; 
+   }
+
+   string prefix = "TF_FP_" + (string)barTime;
+   double offset = InpDistanciaWick * _Point;
+
+   string buyText = (string)buyTicks;
+   string sellText = (string)sellTicks;
+   
+   color finalBuyColor  = InpColorLabelUp;
+   color finalSellColor = InpColorLabelDown;
+
+   double limitExhaustion = avgHalfVol * (InpExhaustionPct / 100.0);
+   
+   bool isExhaustBuy = false;
+   bool isExhaustSell = false;
+
+   if(buyTicks >= InpMaxUpVolume) {
+      finalBuyColor = InpColorMaxUp; 
+   } else if(avgHalfVol > 0 && buyTicks < limitExhaustion) {
+      finalBuyColor = InpColorExhaust; 
+      buyText += "*"; 
+      isExhaustBuy = true; 
+   }
+
+   if(sellTicks >= InpMaxDownVolume) {
+      finalSellColor = InpColorMaxDown; 
+   } else if(avgHalfVol > 0 && sellTicks < limitExhaustion) {
+      finalSellColor = InpColorExhaust; 
+      sellText += "*"; 
+      isExhaustSell = true; 
+   }
+
+   if(InpMostrarSomentePicos == SIM) {
+      if(buyTicks < InpMaxUpVolume && !isExhaustBuy) buyText = " ";
+      if(sellTicks < InpMaxDownVolume && !isExhaustSell) sellText = " ";
+   }
+
+   // ---- 1. Label de Compra ----
+   string lblBuy = prefix + "_Buy";
+   if(ObjectFind(0, lblBuy) < 0) ObjectCreate(0, lblBuy, OBJ_TEXT, 0, barTime, high + offset);
+   
+   ObjectSetDouble(0, lblBuy, OBJPROP_PRICE, high + offset); 
+   ObjectSetString(0, lblBuy, OBJPROP_TEXT, buyText);
+   ObjectSetInteger(0, lblBuy, OBJPROP_COLOR, finalBuyColor); 
+   ObjectSetInteger(0, lblBuy, OBJPROP_FONTSIZE, 6);
+   ObjectSetString(0, lblBuy, OBJPROP_FONT, "Arial");
+   ObjectSetInteger(0, lblBuy, OBJPROP_ANCHOR, ANCHOR_LOWER);
+
+   // ---- 2. Label de Venda ----
+   string lblSell = prefix + "_Sell";
+   if(ObjectFind(0, lblSell) < 0) ObjectCreate(0, lblSell, OBJ_TEXT, 0, barTime, low - offset);
+   
+   ObjectSetDouble(0, lblSell, OBJPROP_PRICE, low - offset); 
+   ObjectSetString(0, lblSell, OBJPROP_TEXT, sellText);
+   ObjectSetInteger(0, lblSell, OBJPROP_COLOR, finalSellColor); 
+   ObjectSetInteger(0, lblSell, OBJPROP_FONTSIZE, 6);
+   ObjectSetString(0, lblSell, OBJPROP_FONT, "Arial");
+   ObjectSetInteger(0, lblSell, OBJPROP_ANCHOR, ANCHOR_UPPER);
+   
+   if(isCurrent) { 
+      string tfName = EnumToString(InpTimeFrame);
+      if(InpTimeFrame == PERIOD_CURRENT) tfName = EnumToString(_Period);
+      
+      if(buyTicks >= InpMaxUpVolume) Comment(" [" + tfName + "] ALERTA: ABSORÇÃO DE COMPRA!");
+      else if(sellTicks >= InpMaxDownVolume) Comment(" [" + tfName + "] ALERTA: ABSORÇÃO DE VENDA!");
+      else if(isExhaustBuy || isExhaustSell) Comment(" [" + tfName + "] EXAUSTÃO DETECTADA!");
+      else Comment(" [" + tfName + "] Fluxo Normal (Bandas Ativas)..."); 
+   }
+}
